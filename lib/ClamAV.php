@@ -1,11 +1,10 @@
-<?php
+<?php declare(strict_types=1);
 
 namespace Amp\ClamAV;
 
-use Amp\ByteStream\InputStream;
+use Amp\ByteStream\ReadableStream;
 use Amp\ByteStream\StreamException;
 use Amp\Socket\Socket;
-use Amp\Promise;
 
 use function Amp\call;
 
@@ -26,16 +25,25 @@ class ClamAV extends Base
      * Initiates a new ClamAV session
      * Note: you MUST call `Session::end()` once you are done.
      *
-     * @return \Amp\Promise<\Amp\ClamAV\Session>
      */
-    public function session(): Promise
+    public function session(): Session
     {
-        return call(function () {
-            /** @var Socket */
-            $socket = yield \Amp\Socket\connect($this->sockuri);
+        /** @var Socket */
+        $socket = \Amp\Socket\connect($this->sockuri);
 
-            return yield Session::fromSocket($socket);
-        });
+        return Session::fromSocket($socket);
+    }
+
+    /**
+     * Runs a continue scan that stops after the entire file has been checked.
+     *
+     *
+     * @return ScanResult[]
+     */
+    public function continueScan(string $path): array
+    {
+        $output = \trim($this->command('CONTSCAN ' . $path));
+        return \array_map([$this, 'parseScanOutput'], \array_filter(\explode("\n", $output), fn ($val) => !empty($val)));
     }
 
     /**
@@ -43,54 +51,40 @@ class ClamAV extends Base
      *
      * @param string $path The file or directory's path
      *
-     * @return \Amp\Promise<\Amp\ClamAV\ScanResult>
      */
-    public function multiScan(string $path): Promise
+    public function multiScan(string $path): ScanResult
     {
-        return call(function () use ($path) {
-            return $this->parseScanOutput(yield from $this->command('MULTISCAN ' . $path));
-        });
+        return $this->parseScanOutput($this->command('MULTISCAN ' . $path));
     }
 
     /** @inheritdoc */
-    public function scanFromStream(InputStream $stream): Promise
+    public function scanFromStream(ReadableStream $stream): ScanResult
     {
-        return call(function () use ($stream) {
-            /** @var Socket */
-            $socket = yield from $this->getSocket();
-            try {
-                yield from $this->pipeStreamScan($stream, $socket);
-            } catch (StreamException $e) {
-                if (!$socket->isClosed()) {
-                    $message = yield $socket->read();
-                    if ($message === 'INSTREAM size limit exceeded') {
-                        throw new ClamException('INSTREAM size limit exceeded', ClamException::INSTREAM_WRITE_EXCEEDED, $e);
-                    }
-                }
-                throw new ClamException($e->getMessage() . $message, ClamException::UNKNOWN, $e);
-            }
-            return $this->parseScanOutput(yield $socket->read());
-        });
+        $socket = $this->getSocket();
+        try {
+            $this->pipeStreamScan($stream, $socket);
+        } catch (StreamException $e) {
+            $this->handleStreamException($e, $socket->isClosed() ? null : $socket->read());
+        }
+        return $this->parseScanOutput($socket->read());
     }
 
     /** @inheritdoc */
-    protected function command(string $command, bool $waitForResponse = true): \Generator
+    protected function command(string $command, bool $waitForResponse = true): ?string
     {
-        /** @var Socket */
-        $socket = yield from $this->getSocket();
-        yield $socket->write('z' . $command . "\x0");
+        $socket = $this->getSocket();
+        $socket->write('z' . $command . "\x0");
         if ($waitForResponse) {
-            return \trim(yield $socket->read());
+            return \trim($socket->read());
         }
     }
 
     /**
      * Gets a new socket (to execute a new command).
      *
-     * @return \Generator<\Amp\Socket>
      */
-    protected function getSocket(): \Generator
+    protected function getSocket(): Socket
     {
-        return yield \Amp\Socket\connect($this->sockuri);
+        return \Amp\Socket\connect($this->sockuri);
     }
 }

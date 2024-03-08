@@ -1,51 +1,44 @@
-<?php
+<?php declare(strict_types=1);
 
 namespace Amp\ClamAV;
 
-use Amp\ByteStream\InputStream;
-use Amp\Loop;
-use Amp\Promise;
+use Amp\ByteStream\ReadableStream;
+use Revolt\EventLoop;
 
 const LOOP_STATE_IDENTIFIER = ClamAV::class;
 
 /**
  * Get the application-wide `ClamAV` instance.
  *
- * @return \Amp\ClamAV\ClamAV
  */
 function clamav(string $sockuri = ClamAV::DEFAULT_SOCK_URI): ClamAV
 {
+    static $map;
+    $map ??= new \WeakMap();
+
+    $loop = EventLoop::getDriver();
     /** @var ClamAV */
-    $instance = Loop::getState(LOOP_STATE_IDENTIFIER);
 
-    if ($instance === null) {
-        $instance = new ClamAV($sockuri);
-        Loop::setState(LOOP_STATE_IDENTIFIER, $instance);
-    }
-
-    return $instance;
+    return $map[$loop] ??= new ClamAV($sockuri);
 }
 
 /**
  * Pings the ClamAV daemon.
  *
- * @return \Amp\Promise<bool>
  */
-function ping(): Promise
+function ping(): bool
 {
     return clamav()->ping();
 }
 
 /**
- * Scans a file or directory using the native ClamD `SCAN` command (ClamD must have access to this file!)
- * 
+ * Scans a file or directory using the native ClamD `SCAN` command (ClamD must have access to this file!).
+ *
  * Stops once a malware has been found.
  *
- * @param string $path
  *
- * @return \Amp\Promise<\Amp\ClamAV\ScanResult>
  */
-function scan(string $path): Promise
+function scan(string $path): ScanResult
 {
     return clamav()->scan($path);
 }
@@ -55,31 +48,28 @@ function scan(string $path): Promise
  *
  * @param string $path The file or directory's path
  *
- * @return \Amp\Promise<\Amp\ClamAV\ScanResult>
  */
-function multiScan(string $path): Promise
+function multiScan(string $path): ScanResult
 {
     return clamav()->multiScan($path);
 }
 
 /**
- * Runs a continue scan that stops after the entire file has been checked
- * 
- * @param string $path
- * 
- * @return \Amp\Promise<\Amp\ClamAV\ScanResult[]>
+ * Runs a continue scan that stops after the entire file has been checked.
+ *
+ *
+ * @return \Amp\ClamAV\ScanResult[]
  */
-function continueScan(string $path)
+function continueScan(string $path): array
 {
     return clamav()->continueScan($path);
 }
 
 /**
- * Runs the `VERSION` command
- * 
- * @return \Amp\Promise<string>
+ * Runs the `VERSION` command.
+ *
  */
-function version(): Promise
+function version(): string
 {
     return clamav()->version();
 }
@@ -87,13 +77,11 @@ function version(): Promise
 /**
  * Scans from a stream.
  *
- * @param $stream
  *
- * @return \Amp\Promise<\Amp\ClamAV\ScanResult>
- * @throws \Amp\ClamAV\ClamException If an exception happens with writing to the stream (if the INSTREAM limit has been reached, the errorCode will be `ClamException::INSTREAM_WRITE_EXCEEDED`)
+ * @throws \Amp\ClamAV\ClamException May happen while writing to the stream (if the INSTREAM limit has been reached, the errorCode will be `ClamException::INSTREAM_WRITE_EXCEEDED`)
  * @throws \Amp\ByteStream\ClosedException If the socket has been closed
  */
-function scanFromStream(InputStream $stream): Promise
+function scanFromStream(ReadableStream $stream): ScanResult
 {
     return clamav()->scanFromStream($stream);
 }
@@ -102,9 +90,8 @@ function scanFromStream(InputStream $stream): Promise
  * Initiates a new ClamAV session
  * Note: you MUST call `Session::end()` once you are done.
  *
- * @return \Amp\Promise<\Amp\ClamAV\Session>
  */
-function session(): Promise
+function session(): Session
 {
     return clamav()->session();
 }

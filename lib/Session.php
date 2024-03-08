@@ -1,19 +1,20 @@
-<?php
+<?php declare(strict_types=1);
 
 namespace Amp\ClamAV;
 
-use Amp\ByteStream\InputStream;
+use Amp\ByteStream\ReadableStream;
 use Amp\ByteStream\StreamException;
-use Amp\Deferred;
+use Amp\DeferredFuture;
+use Amp\Future;
 use Amp\Promise;
 use Amp\Socket\Socket;
 
-use function Amp\call;
+use function Amp\async;
 
 class Session extends Base
 {
     private Socket $socket;
-    private array $deferreds = []; // $i -> \Amp\Deferred
+    private array $deferreds = []; // $i -> \Amp\DeferredFuture
     private int $reqId = 1;
 
     private function __construct()
@@ -25,28 +26,26 @@ class Session extends Base
      *
      * @internal
      *
-     * @param \Amp\Socket\Socket $socket
      *
-     * @return Promise<self>
      */
-    public static function fromSocket(Socket $socket): Promise
+    public static function fromSocket(Socket $socket): self
     {
-        return call(function () use ($socket) {
-            $instance = new self;
-            $instance->socket = $socket;
-            yield from $instance->command('IDSESSION', waitForResponse: false);
-            $instance->readLoop();
-            return $instance;
-        });
+        $instance = new self;
+        $instance->socket = $socket;
+        $instance->command('IDSESSION', waitForResponse: false);
+        $instance->readLoop();
+        return $instance;
     }
 
     /** @inheritdoc */
-    protected function command(string $command, bool $waitForResponse = true): \Generator
+    protected function command(string $command, bool $waitForResponse = true): ?string
     {
-        yield $this->socket->write('z' . $command . "\x0");
+        $this->socket->write('z' . $command . "\x0");
         if ($waitForResponse) {
-            return yield $this->commandResponsePromise($this->reqId++);
+            return $this->commandResponseFuture($this->reqId++)->await();
         }
+
+        return null;
     }
 
     /**
@@ -54,38 +53,38 @@ class Session extends Base
      *
      * @param int $reqId The request's id (an auto-increment integer, which will be used by ClamD to identify this request)
      *
-     * @return \Amp\Promise<string>
+     * @return \Amp\Future<string>
      */
-    protected function commandResponsePromise(int $reqId): Promise
+    protected function commandResponseFuture(int $reqId): Future
     {
         if (isset($this->deferreds[$reqId])) {
             return $this->deferreds[$reqId];
         }
-        $deferred = new Deferred;
+        $deferred = new DeferredFuture;
         $this->deferreds[$reqId] = $deferred;
-        return $deferred->promise();
+        return $deferred->getFuture();
     }
 
     /**
      * A read loop for the ClamD socket (given that it might send responses unordered).
      *
-     * @return \Amp\Promise<never>
+     * @return \Amp\Future<never>
      */
     protected function readLoop()
     {
-        return call(function () {
+        return async(function () {
             $chunk = '';
             // read from the socket
-            while (null !== $chunk = yield $this->socket->read()) {
+            while (null !== $chunk = $this->socket->read()) {
                 // split the message (ex: "1: PONG")
                 $parts = \explode(' ', $chunk, 2);
                 $message = \trim($parts[1]);
                 $id = (int) \substr($parts[0], 0, \strpos($parts[0], ':'));
                 if (isset($this->deferreds[$id])) {
-                    /** @var Deferred */
+                    /** @var DeferredFuture */
                     $deferred = $this->deferreds[$id];
                     // resolve the enqueued request
-                    $deferred->resolve($message);
+                    $deferred->complete($message);
                     unset($this->deferreds[$id]);
                 }
             }
@@ -95,33 +94,26 @@ class Session extends Base
     /**
      * Ends this session.
      *
-     * @return \Amp\Promise<void>
      */
-    public function end(): Promise
+    public function end(): void
     {
-        return call(function () {
-            yield from $this->command('END', waitForResponse: false);
-            yield $this->socket->end();
-        });
+        $this->command('END', waitForResponse: false);
+        $this->socket->end();
     }
 
     /** @inheritdoc */
-    public function scanFromStream(InputStream $stream): Promise
+    public function scanFromStream(ReadableStream $stream): ScanResult
     {
-        return call(function () use ($stream) {
-            $promise = $this->commandResponsePromise($this->reqId++);
-            try {
-                yield from $this->pipeStreamScan($stream, $this->socket);
-            } catch (StreamException $e) {
-                if (!$this->socket->isClosed()) {
-                    $message = yield $promise;
-                    if ($message === 'INSTREAM size limit exceeded') {
-                        throw new ClamException('INSTREAM size limit exceeded', ClamException::INSTREAM_WRITE_EXCEEDED, $e);
-                    }
-                }
-                throw new ClamException($e->getMessage() . $message, ClamException::UNKNOWN, $e);
-            }
-            return $this->parseScanOutput(yield $promise);
-        });
+        $future = $this->commandResponseFuture($this->reqId++);
+        try {
+            $this->pipeStreamScan($stream, $this->socket);
+        } catch (StreamException $e) {
+            $this->handleStreamException(
+                $e,
+                $this->socket->isClosed() ? null : $future->await(),
+            );
+        }
+
+        return $this->parseScanOutput($future->await());
     }
 }

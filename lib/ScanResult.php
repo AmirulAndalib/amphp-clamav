@@ -1,4 +1,4 @@
-<?php
+<?php declare(strict_types=1);
 
 namespace Amp\ClamAV;
 
@@ -28,8 +28,16 @@ class ScanResult
     ) {
     }
 
+    /** @codeCoverageIgnore */
     public function __toString()
     {
         return 'ScanResult(filename: ' . \var_export($this->filename, true) . ', isInfected: ' . \var_export($this->isInfected, true) . ', malwareType: ' . \var_export($this->malwareType, true) . ')';
+    }
+
+    public function equals(ScanResult $other): bool
+    {
+        return $this->isInfected == $other->isInfected &&
+            $this->filename == $other->filename &&
+            $this->malwareType == $other->malwareType;
     }
 }
